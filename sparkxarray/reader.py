@@ -24,8 +24,7 @@ import pandas as pd
 import xarray as xr
 import itertools
 from glob import glob
-from pyspark.sql import SparkSession
-
+# from pyspark.sql import SparkSession # Removing this line simply makes the library compatible with Spark 1.6.3 !
 
 def ncread(sc, paths, mode='single', **kwargs):
     """Calls sparkxarray netcdf read function based on the mode parameter.
@@ -62,19 +61,22 @@ def ncread(sc, paths, mode='single', **kwargs):
 
     if 'partition_on' not in kwargs:
         kwargs['partition_on'] = ['time']
+    
+    if 'decode_times' not in kwargs:
+        kwargs['decode_times'] = True
 
     error_msg = ("You specified a mode that is not implemented.")
 
     if (mode == 'single'):
-        return read_nc_single(sc, paths, **kwargs)
+        return _read_nc_single(sc, paths, **kwargs)
 
     elif (mode == 'multi'):
-        return read_nc_multi(sc, paths, **kwargs)
+        return _read_nc_multi(sc, paths, **kwargs)
     else:
         raise NotImplementedError(error_msg)
 
         
-def read_nc_single(sc, paths, **kwargs):
+def _read_nc_single(sc, paths, **kwargs):
     """ Read a single netCDF file
 
     Parameters
@@ -91,11 +93,12 @@ def read_nc_single(sc, paths, **kwargs):
     """
     partition_on = kwargs.get('partition_on')
     partitions = kwargs.get('partitions')
+    decode_times=kwargs.get('decode_times')
 
-    dset = xr.open_dataset(paths)
+    dset = xr.open_dataset(paths, autoclose=True, decode_times=decode_times)
 
     # D = {'dim_1': dim_1_size, 'dim_2': dim_2_size, ...}
-    D ={dset[dimension].name:dset[dimension].size for dimension in partition_on}
+    D = {dset[dimension].name:dset[dimension].size for dimension in partition_on}
     
     # dim_sizes = [range(dim_1_size), range(dim_2_size), range(...)]
     dim_ranges = [range(dim_size) for dim_size in D.values()]
@@ -107,19 +110,19 @@ def read_nc_single(sc, paths, **kwargs):
     positional_indices = [dict(zip(partition_on, ij)) for ij in dim_cartesian_product_indices]
 
     if not partitions:
-        partitions = len(dim_cartesian_product_indices) / 50
+        partitions = len(dim_cartesian_product_indices)
 
     if partitions > len(dim_cartesian_product_indices):
         partitions = len(dim_cartesian_product_indices)
 
     
     # Create an RDD
-    rdd = sc.parallelize(positional_indices, partitions).map(lambda x: readone_slice(dset, x))
+    rdd = sc.parallelize(positional_indices, partitions).map(lambda x: _readone_slice(dset, x))
 
     return rdd
 
 
-def readone_slice(dset, positional_indices):
+def _readone_slice(dset, positional_indices):
     """Read a slice from an xarray.Dataset.
 
     Parameters
@@ -148,7 +151,7 @@ def readone_slice(dset, positional_indices):
     return chunk
 
 
-def read_nc_multi(sc, paths, **kwargs):
+def _read_nc_multi(sc, paths, **kwargs):
     """ Read multiple netCDF files
 
     Parameters
@@ -174,11 +177,10 @@ def read_nc_multi(sc, paths, **kwargs):
     
     # dim_sizes = [range(dim_1_size), range(dim_2_size), range(...)]
     dim_ranges = [range(dim_size) for dim_size in D.values()]
-    
 
     dim_cartesian_product_indices = [element for element in itertools.product(*dim_ranges)]
 
-    # create a list of dictionaries for  positional indexing
+    # create a list of dictionaries for positional indexing
     positional_indices = [dict(zip(partition_on, ij)) for ij in dim_cartesian_product_indices]
 
     if not partitions:
@@ -192,4 +194,3 @@ def read_nc_multi(sc, paths, **kwargs):
     rdd = sc.parallelize(positional_indices, partitions).map(lambda x: readone_slice(dset, x))
 
     return rdd
-
